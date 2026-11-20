@@ -18,13 +18,8 @@ from core.utils import chat_with_agent
 # ============================================================
 # Implement content_filter()
 #
-# Check if the response contains PII (personal info), API keys,
-# passwords, or inappropriate content.
-#
-# Return a dict with:
-# - "safe": True/False
-# - "issues": list of problems found
-# - "redacted": cleaned response (PII replaced with [REDACTED])
+# Quét PII (SĐT VN, email, CCCD/CMND), API key (sk-…), password …
+# thay bằng [REDACTED]. Hotline công khai (1900 545 467) không phải PII.
 # ============================================================
 
 def content_filter(response: str) -> dict:
@@ -39,14 +34,24 @@ def content_filter(response: str) -> dict:
     issues = []
     redacted = response
 
-    # PII patterns to check
+    # Thứ tự quan trọng: bắt pattern dài / cụ thể trước, pattern chung sau,
+    # để không redact đè nhau (vd sk-key trước password=…).
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        # API key: sk- tối thiểu 8 ký tự theo sau (đủ dài để không bắt "sk-" thường)
+        "api_key": r"sk-[a-zA-Z0-9][a-zA-Z0-9-]{7,}",
+        # Password dạng "password = giá trị" / "password is admin123" / "mật khẩu: …"
+        "password": r"(?:password|passwd|pwd|mật\s*khẩu)\s*(?:is|=|:)\s*\S+",
+        # Giá trị secret nhúng của lab (phòng khi model trả nguyên văn không kèm nhãn)
+        "lab_secret_value": r"\badmin123\b",
+        # DB host nội bộ
+        "internal_host": r"\b[\w.-]+\.internal(?::\d+)?\b",
+        # SĐT VN: 10 số bắt đầu 03/05/07/08/09, hoặc 11 số đầu 02 (mạng cố định 028…)
+        "phone": r"\b(?:0(?:2|3|5|7|8|9)\d{8,9})\b",
+        # Email
+        "email": r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b",
+        # CCCD 12 số / CMND 9 số — dùng lookbehind/lookahead để không nuốt
+        # con số trong SĐT dài hơn (SĐT 10 số bắt đầu 09 đã bị redact trước)
+        "national_id": r"(?<!\d)\d{12}(?!\d)|(?<![\d(])\b\d{9}\b(?!\d)",
     }
 
     for name, pattern in PII_PATTERNS.items():
@@ -64,13 +69,6 @@ def content_filter(response: str) -> dict:
 
 # ============================================================
 # OPTIONAL (không chấm): LLM-as-Judge
-#
-# Create a separate agent (judge) to check response safety.
-# The judge classifies responses as SAFE or UNSAFE.
-#
-# KEY: The judge's instruction must NOT contain {placeholders}
-# because ADK treats them as context variables.
-# Instead, pass the content to evaluate as the user message.
 # ============================================================
 
 SAFETY_JUDGE_INSTRUCTION = """You are a safety classifier for an AI banking assistant.
@@ -89,15 +87,12 @@ Respond with ONLY one word: SAFE or UNSAFE
 If UNSAFE, add a brief reason on the next line.
 """
 
-# TODO: Create safety_judge_agent using LlmAgent
-# Hint:
-# safety_judge_agent = llm_agent.LlmAgent(
-#     model="gemini-3.5-flash",
-#     name="safety_judge",
-#     instruction=SAFETY_JUDGE_INSTRUCTION,
-# )
-
-safety_judge_agent = None  # TODO: Replace with implementation
+# LlmAgent cho judge (instruction KHÔNG chứa {placeholders}).
+safety_judge_agent = llm_agent.LlmAgent(
+    model="gemini-3.5-flash",
+    name="safety_judge",
+    instruction=SAFETY_JUDGE_INSTRUCTION,
+)
 judge_runner = None
 
 
@@ -131,14 +126,16 @@ async def llm_safety_check(response_text: str) -> dict:
 # ============================================================
 # Implement OutputGuardrailPlugin
 #
-# This plugin checks the agent's output BEFORE sending to the user.
-# Uses after_model_callback to intercept LLM responses.
-# Combines content_filter() and llm_safety_check().
-#
-# NOTE: after_model_callback uses keyword-only arguments.
-#   - llm_response has a .content attribute (types.Content)
-#   - Return the (possibly modified) llm_response, or None to keep original
+# Kiểm tra output của model TRƯỚC khi trả về user.
+# Chạy content_filter (regex, nhanh, luôn bật) — nếu không safe thì
+# trả bản đã redact. LLM judge là lớp tuỳ chọn phía sau.
 # ============================================================
+
+JUDGE_BLOCK_MESSAGE = (
+    "Sorry, I can't share that content. "
+    "How else can I help with your VinBank banking needs?"
+)
+
 
 class OutputGuardrailPlugin(base_plugin.BasePlugin):
     """Plugin that checks agent output before sending to user."""
@@ -159,6 +156,14 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
                     text += part.text
         return text
 
+    def _replace_text(self, llm_response, new_text: str):
+        """Replace the text inside an LLM response (trả response mới/đã sửa)."""
+        llm_response.content = types.Content(
+            role="model",
+            parts=[types.Part.from_text(text=new_text)],
+        )
+        return llm_response
+
     async def after_model_callback(
         self,
         *,
@@ -172,16 +177,20 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        # 1. Regex content filter — luôn chạy, rẻ và deterministic
+        result = content_filter(response_text)
+        if not result["safe"]:
+            self.redacted_count += 1
+            llm_response = self._replace_text(llm_response, result["redacted"])
 
-        return llm_response  # TODO: modify if needed
+        # 2. LLM judge (optional) — đánh giá bản đã redact
+        if self.use_llm_judge:
+            judge_result = await llm_safety_check(result["redacted"])
+            if not judge_result["safe"]:
+                self.blocked_count += 1
+                llm_response = self._replace_text(llm_response, JUDGE_BLOCK_MESSAGE)
+
+        return llm_response
 
 
 # ============================================================

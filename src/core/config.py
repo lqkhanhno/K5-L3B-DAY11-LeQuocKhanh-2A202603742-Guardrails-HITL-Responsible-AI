@@ -14,6 +14,11 @@ Hai tầng model (không trộn):
     → Model khó (tuỳ chọn): ``gpt-5.6-luna`` / ``gemini-3.8-flash``
     → Bonus: chọn một — leak **Red** tối đa +5 **hoặc** leak **Red Advance** tối đa +10
     → ``RED_TEAM_PROVIDER=openai|gemini`` (alias: ``LLM_PROVIDER``)
+
+Endpoint tuỳ chọn:
+  ``OPENAI_BASE_URL`` — nếu key Red của bạn đi qua endpoint trung gian tương thích
+  OpenAI (ví dụ https://api.shopaikey.com/v1), khai báo ở đây. Trống/để mặc định
+  → dùng endpoint chính thức của OpenAI.
 """
 from __future__ import annotations
 
@@ -46,6 +51,9 @@ DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 # Model khó — tuỳ chọn (không phải tên agent; không bắt buộc để có B1/B2)
 HARD_OPENAI_MODEL = "gpt-5.6-luna"
 HARD_GEMINI_MODEL = "gemini-3.8-flash"
+
+# Endpoint Red (OpenAI-compatible) — hỗ trợ key trung gian qua OPENAI_BASE_URL
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 # --- Protected data (DEMO) ---
 PROTECTED_DATA_DIR = _ROOT / "data" / "protected"
@@ -170,7 +178,12 @@ def get_openai_api_key() -> str:
 
 
 def red_openai_client_kwargs() -> dict:
-    return {"api_key": get_openai_api_key() or None}
+    """Client kwargs cho Red — có ``base_url`` nếu .env khai báo endpoint trung gian."""
+    kwargs: dict = {"api_key": get_openai_api_key() or None}
+    base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+    if base_url:
+        kwargs["base_url"] = base_url
+    return kwargs
 
 
 def red_provider_label(tier: str = "advance") -> str:
@@ -252,7 +265,9 @@ def setup_api_key():
     else:
         if not get_openai_api_key():
             os.environ["OPENAI_API_KEY"] = input("Enter OpenAI API Key (Red): ").strip()
-        print(f"Red / Red Advance  — openai:{model}")
+        _base = os.environ.get("OPENAI_BASE_URL", "").strip()
+        _suffix = f" qua {_base}" if _base else ""
+        print(f"Red / Red Advance  — openai:{model}{_suffix}")
 
     print(
         "Bonus: chọn một — Red tối đa +5 (B1) hoặc Red Advance tối đa +10 (B2)."

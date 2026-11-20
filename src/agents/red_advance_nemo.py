@@ -17,7 +17,9 @@ output rails). LLM chính của Red Advance vẫn do runner OpenAI / Google ADK 
 
 Self-check dùng chính model Red trong ``.env`` qua engine ``openai`` (mặc định
 của NeMo ≥ 0.22, không cần LangChain). Gemini đi qua endpoint tương thích OpenAI
-của Google AI Studio, cùng ``GOOGLE_API_KEY``.
+của Google AI Studio, cùng ``GOOGLE_API_KEY``. Nếu .env khai ``OPENAI_BASE_URL``
+(endpoint trung gian tương thích OpenAI, ví dụ shopaikey), self-check NeMo đi
+qua đúng endpoint đó.
 
 Fail-closed: NeMo lỗi (mất mạng, sai key, hết quota…) thì request bị chặn.
 
@@ -237,12 +239,17 @@ def _model_entry(provider: str, model: str) -> dict:
             "api_key_env_var": "GOOGLE_API_KEY",
             "parameters": {"base_url": GEMINI_OPENAI_BASE_URL},
         }
-    return {
+    entry: dict = {
         "type": "main",
         "engine": "openai",
         "model": model,
         "api_key_env_var": "OPENAI_API_KEY",
     }
+    # Endpoint trung gian tương thích OpenAI (vd OPENAI_BASE_URL=https://api.shopaikey.com/v1)
+    custom_base = os.environ.get("OPENAI_BASE_URL", "").strip()
+    if custom_base:
+        entry["parameters"] = {"base_url": custom_base}
+    return entry
 
 
 def build_rails_dict(

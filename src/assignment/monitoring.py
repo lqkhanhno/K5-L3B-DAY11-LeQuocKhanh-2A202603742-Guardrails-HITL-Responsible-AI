@@ -1,5 +1,5 @@
 """
-Assignment 11 — Monitoring & Alerts starter (TODO).
+Assignment 11 — Monitoring & Alerts.
 
 Tracks block rate, rate-limit hits, judge fail rate.
 Fires alerts when thresholds are exceeded.
@@ -41,17 +41,83 @@ class MonitoringAlert:
     judge_checks: int = 0
     judge_fails: int = 0
 
+    def record_request(self, *, blocked: bool = False, rate_limited: bool = False):
+        """Helper: cập nhật counters sau mỗi request (tuỳ chọn khi ghép pipeline)."""
+        self.total_requests += 1
+        if blocked:
+            self.blocked_requests += 1
+        if rate_limited:
+            self.rate_limit_hits += 1
+
+    def record_judge(self, *, failed: bool = False):
+        """Helper: cập nhật counters cho LLM judge."""
+        self.judge_checks += 1
+        if failed:
+            self.judge_fails += 1
+
     def check_metrics(self) -> list[Alert]:
-        """TODO: compute rates, append Alert objects when thresholds exceeded."""
-        raise NotImplementedError("Implement MonitoringAlert.check_metrics")
+        """Tính rates, thêm Alert khi vượt ngưỡng. Không nhân bản alert cũ."""
+        self.alerts = []
+
+        block_rate = (
+            self.blocked_requests / self.total_requests
+            if self.total_requests
+            else 0.0
+        )
+        if block_rate > self.block_rate_threshold:
+            self.alerts.append(
+                Alert(
+                    metric="block_rate",
+                    value=round(block_rate, 4),
+                    threshold=self.block_rate_threshold,
+                    message=(
+                        f"Block rate {block_rate:.0%} vượt ngưỡng "
+                        f"{self.block_rate_threshold:.0%} — kiểm tra tấn công / false positive."
+                    ),
+                )
+            )
+
+        if self.rate_limit_hits > self.rate_limit_hit_threshold:
+            self.alerts.append(
+                Alert(
+                    metric="rate_limit_hits",
+                    value=float(self.rate_limit_hits),
+                    threshold=float(self.rate_limit_hit_threshold),
+                    message=(
+                        f"{self.rate_limit_hits} lần bị rate-limit "
+                        f"(ngưỡng {self.rate_limit_hit_threshold}) — nghi flood / cost attack."
+                    ),
+                )
+            )
+
+        judge_fail_rate = (
+            self.judge_fails / self.judge_checks if self.judge_checks else 0.0
+        )
+        if judge_fail_rate > self.judge_fail_rate_threshold:
+            self.alerts.append(
+                Alert(
+                    metric="judge_fail_rate",
+                    value=round(judge_fail_rate, 4),
+                    threshold=self.judge_fail_rate_threshold,
+                    message=(
+                        f"Judge fail rate {judge_fail_rate:.0%} vượt ngưỡng "
+                        f"{self.judge_fail_rate_threshold:.0%} — output quality có vấn đề."
+                    ),
+                )
+            )
+
+        return self.alerts
 
     def export_json(self, filepath: str | None = None):
-        """TODO: write metrics + alerts to JSON under repo-root ``outputs/`` by default.
-        Use ``filepath or default_metrics_path()`` so running from ``src/`` does not
-        create ``src/outputs/``.
-        """
-        _ = filepath or default_metrics_path()
-        raise NotImplementedError("Implement MonitoringAlert.export_json")
+        """Write metrics + alerts to JSON under repo-root ``outputs/`` by default."""
+        path = Path(filepath or default_metrics_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.check_metrics()
+        path.write_text(
+            json.dumps(self.snapshot(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"Metrics exported → {path}")
+        return path
 
     def snapshot(self) -> dict:
         block_rate = (
